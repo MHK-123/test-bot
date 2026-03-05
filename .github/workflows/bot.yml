@@ -1,4 +1,4 @@
-name: Run Discord Bot
+name: Run DungeonKeeper Bot
 
 on:
   workflow_dispatch:
@@ -17,19 +17,15 @@ jobs:
           python-version: "3.11"
 
       - name: Install Dependencies
-        run: pip install discord.py
-
-      - name: Debug Environment
         run: |
-          echo "CHANNEL=$STAFF_CHANNEL_ID"
-          echo "ROLE=$STAFF_ROLE_ID"
-        env:
-          STAFF_CHANNEL_ID: ${{ secrets.STAFF_CHANNEL_ID }}
-          STAFF_ROLE_ID: ${{ secrets.STAFF_ROLE_ID }}
+          python -m pip install --upgrade pip
+          pip install discord.py
 
-      - name: Run Bot
-        run: python bot.py
+      - name: Start Bot
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           STAFF_CHANNEL_ID: ${{ secrets.STAFF_CHANNEL_ID }}
           STAFF_ROLE_ID: ${{ secrets.STAFF_ROLE_ID }}
+        run: |
+          echo "Starting DungeonKeeper..."
+          python bot.py
