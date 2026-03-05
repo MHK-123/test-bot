@@ -1,7 +1,6 @@
 name: Run Discord Bot
 
 on:
-  push:
   workflow_dispatch:
 
 jobs:
@@ -9,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout repo
         uses: actions/checkout@v3
 
       - name: Setup Python
@@ -17,9 +16,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Dependencies
-        run: |
-          pip install discord.py
+      - name: Install dependencies
+        run: pip install discord.py
 
       - name: Run Bot
         run: python bot.py
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          STAFF_CHANNEL_ID: ${{ secrets.STAFF_CHANNEL_ID }}
+          STAFF_ROLE_ID: ${{ secrets.STAFF_ROLE_ID }}
