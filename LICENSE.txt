@@ -1,0 +1,17 @@
+Copyright (c) 2026 Your Name
+
+This software is licensed for personal or server use only.
+
+You are allowed to:
+- Run the bot on your own server
+- Modify the code for personal use
+
+You are NOT allowed to:
+- Resell the source code
+- Redistribute the source code
+- Share the code publicly
+- Claim the code as your own work
+
+This license is non-transferable.
+
+Violation of this license may result in license termination.
