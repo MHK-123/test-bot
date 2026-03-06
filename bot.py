@@ -1,3 +1,11 @@
+"""
+Premium Discord DM Report Bot
+Copyright (c) 2026 Your Name
+
+This software is licensed for personal server use only.
+Redistribution or resale of this source code is prohibited.
+"""
+
 import discord
 from discord.ext import commands
 import os
