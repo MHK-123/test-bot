@@ -1,169 +1,73 @@
-import asyncio
-import os
-import re
-from datetime import datetime, timedelta
-from typing import Any, Optional
+"""
+SQLite database helpers for the bot.
 
-try:
-    from supabase import create_client  # type: ignore
-except Exception:  # pragma: no cover
-    create_client = None  # type: ignore
+This creates a local database file `bot.db` next to this file and stores reports in
+the `reports` table.
+"""
 
-MENTION_OR_ID_RE = re.compile(r"(\d{15,25})")
-
-
-def require_env(name: str) -> str:
-    value = os.environ.get(name)
-    if not value:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 
-def parse_user_id(text: str) -> int:
-    m = MENTION_OR_ID_RE.search(text.strip())
-    if not m:
-        raise ValueError("Could not parse a user ID/mention.")
-    return int(m.group(1))
+# Database file: ./bot.db (in the same folder as db.py)
+DB_PATH = Path(__file__).with_name("bot.db")
 
 
-class SupabaseStore:
-    """
-    Expected tables (minimal):
+@contextmanager
+def _connect():
+    # `check_same_thread=False` is a safe default for Discord bots where commands may
+    # run in different tasks/threads depending on the runtime. SQLite will still
+    # serialize writes internally.
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    try:
+        conn.row_factory = sqlite3.Row
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
 
-    - cases:
-        id (bigint/serial, PK)
-        reporter_id (bigint)
-        report_content (text)
-        attachment_urls (jsonb, nullable)
-        status (text)                 -- "OPEN" / "CLOSED"
-        created_at (timestamptz)
-        closed_at (timestamptz, nullable)
-        guild_id (bigint, nullable)
-        staff_channel_id (bigint, nullable)
-        staff_message_id (bigint, nullable, unique)
-        thread_id (bigint, nullable)
 
-    - blacklist:
-        user_id (bigint, PK)
-        created_at (timestamptz)
-
-    - dm_sessions:
-        user_id (bigint, PK)
-        expires_at (timestamptz)
-    """
-
-    def __init__(self, url: str, key: str):
-        if create_client is None:
-            raise RuntimeError("supabase is not installed. Install with: pip install -r requirements.txt")
-        self._client = create_client(url, key)
-
-    async def _run(self, fn):
-        return await asyncio.to_thread(fn)
-
-    async def is_blacklisted(self, user_id: int) -> bool:
-        def _q():
-            res = self._client.table("blacklist").select("user_id").eq("user_id", user_id).limit(1).execute()
-            return bool(getattr(res, "data", None))
-
-        return await self._run(_q)
-
-    async def add_blacklist(self, user_id: int) -> None:
-        def _q():
-            self._client.table("blacklist").upsert({"user_id": user_id}).execute()
-
-        await self._run(_q)
-
-    async def create_or_refresh_session(self, user_id: int, ttl_seconds: int) -> None:
-        expires_at = datetime.utcnow() + timedelta(seconds=ttl_seconds)
-
-        def _q():
-            self._client.table("dm_sessions").upsert(
-                {"user_id": user_id, "expires_at": expires_at.isoformat() + "Z"}
-            ).execute()
-
-        await self._run(_q)
-
-    async def pop_session_if_active(self, user_id: int) -> bool:
-        now = datetime.utcnow().isoformat() + "Z"
-
-        def _q():
-            res = (
-                self._client.table("dm_sessions")
-                .select("user_id, expires_at")
-                .eq("user_id", user_id)
-                .limit(1)
-                .execute()
+def setup() -> None:
+    """Create the `reports` table if it doesn't exist."""
+    with _connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reports (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id TEXT NOT NULL,
+              reason TEXT NOT NULL,
+              created_at TEXT NOT NULL
             )
-            data = getattr(res, "data", None) or []
-            if not data:
-                return False
+            """
+        )
 
-            expires_at = str(data[0].get("expires_at") or "")
-            if expires_at and expires_at < now:
-                self._client.table("dm_sessions").delete().eq("user_id", user_id).execute()
-                return False
 
-            self._client.table("dm_sessions").delete().eq("user_id", user_id).execute()
-            return True
+def add_report(user_id: str, reason: str) -> int:
+    """Insert a report and return its new ID."""
+    created_at = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO reports (user_id, reason, created_at) VALUES (?, ?, ?)",
+            (user_id, reason, created_at),
+        )
+        return int(cur.lastrowid)
 
-        return await self._run(_q)
 
-    async def create_case(self, reporter_id: int, report_content: str, attachment_urls: list[str]) -> int:
-        payload: dict[str, Any] = {
-            "reporter_id": reporter_id,
-            "report_content": report_content,
-            "attachment_urls": attachment_urls or None,
-            "status": "OPEN",
-        }
+def get_reports() -> list[dict[str, Any]]:
+    """Return all reports as a list of dicts (newest first)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, user_id, reason, created_at FROM reports ORDER BY id DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
-        def _q():
-            res = self._client.table("cases").insert(payload).execute()
-            data = getattr(res, "data", None) or []
-            if not data or "id" not in data[0]:
-                raise RuntimeError("Supabase insert did not return case id.")
-            return int(data[0]["id"])
 
-        return await self._run(_q)
-
-    async def attach_case_message_context(
-        self,
-        case_id: int,
-        guild_id: Optional[int],
-        staff_channel_id: int,
-        staff_message_id: int,
-        thread_id: Optional[int],
-    ) -> None:
-        payload: dict[str, Any] = {
-            "guild_id": guild_id,
-            "staff_channel_id": staff_channel_id,
-            "staff_message_id": staff_message_id,
-            "thread_id": thread_id,
-        }
-
-        def _q():
-            self._client.table("cases").update(payload).eq("id", case_id).execute()
-
-        await self._run(_q)
-
-    async def get_case_by_staff_message_id(self, staff_message_id: int) -> Optional[dict[str, Any]]:
-        def _q():
-            res = (
-                self._client.table("cases")
-                .select("*")
-                .eq("staff_message_id", staff_message_id)
-                .limit(1)
-                .execute()
-            )
-            data = getattr(res, "data", None) or []
-            return data[0] if data else None
-
-        return await self._run(_q)
-
-    async def close_case(self, case_id: int) -> None:
-        payload = {"status": "CLOSED", "closed_at": datetime.utcnow().isoformat() + "Z"}
-
-        def _q():
-            self._client.table("cases").update(payload).eq("id", case_id).execute()
-
-        await self._run(_q)
+def delete_report(report_id: int) -> bool:
+    """Delete by ID. Returns True if something was deleted."""
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM reports WHERE id = ?", (report_id,))
+        return cur.rowcount > 0
 
